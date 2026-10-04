@@ -39,7 +39,7 @@ if __name__ == "__main__":
     kmh = df["SpeedMps"].to_numpy() * 3.6
 
     fig, ax = plt.subplots(figsize=(8, 7))
-    sc = ax.scatter(x / 1000, y / 1000, c=kmh, s=6, cmap="viridis")
+    sc = ax.scatter(x / 1000, y / 1000, c=kmh, s=6, cmap="RdYlGn")
     ax.plot(x[0] / 1000, y[0] / 1000, "go", label="start")
     ax.plot(x[-1] / 1000, y[-1] / 1000, "rs", label="end")
     ax.set_aspect("equal")
