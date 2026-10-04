@@ -1,37 +1,37 @@
 """Self-calibration algorithm: recovers the IMU-to-vehicle mounting rotation.
 
 Three legs, each observing a different part of the rotation:
-  1. Roll & pitch -- from the gravity direction measured during
-     stationary/quasi-static segments (GPS speed ~ 0). Yaw is unobservable
-     from gravity alone.
-  2. Yaw -- from aligning the leveled (roll/pitch-corrected) horizontal
-     accelerometer vector against the vehicle-frame (forward, lateral) accel
-     implied by GPS: forward = d(speed)/dt, lateral = speed * d(course)/dt
-     (the non-holonomic assumption that body-frame lateral velocity is ~0,
-     so all cornering shows up as centripetal accel, none as sideslip).
-     Note a *gyro* z-rate cannot be used for this leg: once leveled, a
-     z-axis gyro reads the true yaw rate regardless of yaw mounting offset
-     (rotation about an axis never changes that axis's own reading), so it
-     carries no information about yaw misalignment. Only the horizontal
-     accelerometer axes -- which really do get relabeled by yaw -- can.
-  3. Longitudinal-axis sign confirmation -- correlate the recovered forward
-     axis's accelerometer reading against d(speed)/dt (OBD-II proxy: GPS
-     speed for now). A negative correlation means the yaw leg locked onto
-     the reverse heading; flip 180 degrees.
-     In practice leg 2 never actually needs this correcting (verified via
-     validation/test_yaw_flip.py: 0/80 straight-line-only trials flip, same
-     as the turning-scenario sweep) -- its complex-correlation fit already
-     resolves the full signed yaw against d(speed)/dt, which is itself
-     signed (positive under acceleration, negative under braking), so
-     there's no leftover mod-180 ambiguity for leg 3 to catch, with or
-     without cornering data. A real axis-only estimator (e.g. PCA on the
-     horizontal accel covariance) would have that ambiguity; this one
-     doesn't. Kept as a defensive check anyway -- confirmed the flip
-     mechanism itself is correct by forcing a deliberately-180-off rotation
-     and checking the correlation sign flips accordingly -- since real GSDC
-     data (GPS dropout, low-satellite-count course glitches, engine
-     vibration) could plausibly overwhelm leg 2 in ways the clean sim never
-     does.
+1. Roll & pitch -- from the gravity direction measured during
+    stationary/quasi-static segments (GPS speed ~ 0). Yaw is unobservable
+    from gravity alone.
+2. Yaw -- from aligning the leveled (roll/pitch-corrected) horizontal
+    accelerometer vector against the vehicle-frame (forward, lateral) accel
+    implied by GPS: forward = d(speed)/dt, lateral = speed * d(course)/dt
+    (the non-holonomic assumption that body-frame lateral velocity is ~0,
+    so all cornering shows up as centripetal accel, none as sideslip).
+    Note a *gyro* z-rate cannot be used for this leg: once leveled, a
+    z-axis gyro reads the true yaw rate regardless of yaw mounting offset
+    (rotation about an axis never changes that axis's own reading), so it
+    carries no information about yaw misalignment. Only the horizontal
+    accelerometer axes -- which really do get relabeled by yaw -- can.
+3. Longitudinal-axis sign confirmation -- correlate the recovered forward
+    axis's accelerometer reading against d(speed)/dt (OBD-II proxy: GPS
+    speed for now). A clearly negative correlation (below -flip_confidence) 
+    means the yaw leg locked onto the reverse heading; flip 180 degrees.
+    In practice leg 2 never actually needs this correcting (verified via
+    validation/test_yaw_flip.py: 0/80 straight-line-only trials flip, same
+    as the turning-scenario sweep) -- its complex-correlation fit already
+    resolves the full signed yaw against d(speed)/dt, which is itself
+    signed (positive under acceleration, negative under braking), so
+    there's no leftover mod-180 ambiguity for leg 3 to catch, with or
+    without cornering data. A real axis-only estimator (e.g. PCA on the
+    horizontal accel covariance) would have that ambiguity; this one
+    doesn't. Kept as a defensive check anyway -- confirmed the flip
+    mechanism itself is correct by forcing a deliberately-180-off rotation
+    and checking the correlation sign flips accordingly -- since real GSDC
+    data (GPS dropout, low-satellite-count course glitches, engine
+    vibration) could plausibly overwhelm leg 2 in ways the clean sim never
+    does.
 
 Works on plain arrays (t, accel, gyro, gps speed/course) so the same function
 serves both the synthetic pipeline (validation/sweep.py) and real GSDC data
@@ -92,8 +92,8 @@ def _longitudinal_correlation(accel_imu, rotation, forward_gps, moving_mask):
     return np.corrcoef(forward_accel[moving_mask], forward_gps[moving_mask])[0, 1]
 
 
-def calibrate(t, accel_imu, gyro_imu, gps_speed, gps_course,
-              stationary_threshold=0.3, moving_threshold=1.0, gyro_still_threshold=0.05):
+def calibrate(t, accel_imu, gyro_imu, gps_speed, gps_course, stationary_threshold=0.3,
+            moving_threshold=1.0, gyro_still_threshold=0.05, flip_confidence=0.15):
     """Recover the rotation R such that vehicle_vector = R.apply(imu_vector)."""
     # quasi-static: not moving by GPS, and not rotating either (gyro is mounting-
     # orientation-agnostic in magnitude, so it needs no calibration to use here)
@@ -106,7 +106,7 @@ def calibrate(t, accel_imu, gyro_imu, gps_speed, gps_course,
     rotation = Rotation.from_euler("z", yaw_offset) * r_rp
 
     corr = _longitudinal_correlation(accel_imu, rotation, forward_gps, moving)
-    flipped = corr < 0
+    flipped = corr < -flip_confidence
     if flipped:
         rotation = Rotation.from_euler("z", np.pi) * rotation
         corr = _longitudinal_correlation(accel_imu, rotation, forward_gps, moving)
