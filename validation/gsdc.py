@@ -111,7 +111,7 @@ def load_gps(trip_dir):
 def parse_gnsslog(path):
     """Read a GNSS Logger *_GnssLog.txt. Column names come from the '# Type,col,...' header lines.
     Returns (t_imu, accel, gyro, t_gps, speed, course), times in seconds, course in radians."""
-    cols, rows = {}, {"Fix": [], "UncalAccel": [], "UncalGyro": []}
+    cols, rows = {}, {"Fix": [], "Accel": [], "Gyro": []}
     with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
@@ -130,32 +130,33 @@ def parse_gnsslog(path):
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         return df
 
-    acc, gyr, fix = table("UncalAccel"), table("UncalGyro"), table("Fix")
-    pick = lambda df, p: [next(c for c in df.columns if c.startswith(p + a)) for a in "XYZ"]
-    ts = "elapsedRealtimeNanos"
+    acc, gyr, fix = table("Accel"), table("Gyro"), table("Fix")
+    ts = "utcTimeMillis"
 
-    a = acc[[ts, *pick(acc, "UncalAccel")]].set_axis([ts, "ax", "ay", "az"], axis=1).sort_values(ts)
-    g = gyr[[ts, *pick(gyr, "UncalGyro")]].set_axis([ts, "gx", "gy", "gz"], axis=1).sort_values(ts)
+    a = acc[[ts, "AccelXMps2", "AccelYMps2", "AccelZMps2"]].set_axis([ts, "ax", "ay", "az"], axis=1).sort_values(ts)
+    g = gyr[[ts, "GyroXRadPerSec", "GyroYRadPerSec", "GyroZRadPerSec"]].set_axis([ts, "gx", "gy", "gz"], axis=1).sort_values(ts)
     m = pd.merge_asof(a, g, on=ts, direction="nearest")
 
     if (fix["Provider"] == "GPS").any():
         fix = fix[fix["Provider"] == "GPS"]
-    fix = fix.dropna(subset=[ts, "SpeedMps", "BearingDegrees"]).sort_values(ts)
+    fix = fix.dropna(subset=["UnixTimeMillis", "SpeedMps", "BearingDegrees"]).sort_values("UnixTimeMillis")
 
     t0 = m[ts].iloc[0]
-    t_imu = (m[ts] - t0).to_numpy(dtype=float) / 1e9
+    t_imu = (m[ts] - t0).to_numpy(dtype=float) / 1000.0
     accel = m[["ax", "ay", "az"]].to_numpy(dtype=float)
     gyro = m[["gx", "gy", "gz"]].to_numpy(dtype=float)
-    t_gps = (fix[ts] - t0).to_numpy(dtype=float) / 1e9
+    t_gps = (fix["UnixTimeMillis"] - t0).to_numpy(dtype=float) / 1000.0
     speed = fix["SpeedMps"].to_numpy(dtype=float)
     course = np.radians(90.0 - fix["BearingDegrees"].to_numpy(dtype=float))  # compass bearing to math angle
     return t_imu, accel, gyro, t_gps, speed, course
 
 
-def run(trip_dir):
+def run(trip_dir, log_name=None):
     """Load one GSDC trip and recover its IMU mounting rotation."""
     trip_dir = Path(trip_dir)
-    logs = list(trip_dir.glob("*_GnssLog.txt"))
+    logs = sorted(trip_dir.glob("*_GnssLog.txt"))
+    if log_name:
+        logs = [p for p in logs if p.name == log_name]
     if logs:
         t_imu, accel, gyro, t_gps, gps_speed, gps_course = parse_gnsslog(logs[0])
     else:
@@ -172,8 +173,8 @@ def run(trip_dir):
     result = calibrate(t_imu, accel, gyro, gps_speed_i, gps_course_i)
     print(f"{trip_dir.name}: recovered mounting rotation "
           f"roll={result.roll_deg:.2f} pitch={result.pitch_deg:.2f} yaw={result.yaw_deg:.2f} deg "
-          f"(stationary samples: {result.n_stationary_samples}, "
-          f"longitudinal-axis correlation: {result.longitudinal_correlation:.2f})")
+        f"(stationary samples: {result.n_stationary_samples}, "
+        f"longitudinal-axis correlation: {result.longitudinal_correlation:.2f})")
     return result
 
 
