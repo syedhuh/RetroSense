@@ -108,11 +108,59 @@ def load_gps(trip_dir):
     return t, speed, course
 
 
+def parse_gnsslog(path):
+    """Read a GNSS Logger *_GnssLog.txt. Column names come from the '# Type,col,...' header lines.
+    Returns (t_imu, accel, gyro, t_gps, speed, course), times in seconds, course in radians."""
+    cols, rows = {}, {"Fix": [], "UncalAccel": [], "UncalGyro": []}
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            parts = line.lstrip("# ").split(",")
+            if parts[0] in rows:
+                if line.startswith("#"):
+                    cols[parts[0]] = parts[1:]
+                else:
+                    rows[parts[0]].append(parts[1:])
+
+    def table(kind):
+        df = pd.DataFrame(rows[kind])
+        df.columns = cols[kind][:df.shape[1]]
+        for c in df.columns:
+            if c != "Provider":
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df
+
+    acc, gyr, fix = table("UncalAccel"), table("UncalGyro"), table("Fix")
+    pick = lambda df, p: [next(c for c in df.columns if c.startswith(p + a)) for a in "XYZ"]
+    ts = "elapsedRealtimeNanos"
+
+    a = acc[[ts, *pick(acc, "UncalAccel")]].set_axis([ts, "ax", "ay", "az"], axis=1).sort_values(ts)
+    g = gyr[[ts, *pick(gyr, "UncalGyro")]].set_axis([ts, "gx", "gy", "gz"], axis=1).sort_values(ts)
+    m = pd.merge_asof(a, g, on=ts, direction="nearest")
+
+    if (fix["Provider"] == "GPS").any():
+        fix = fix[fix["Provider"] == "GPS"]
+    fix = fix.dropna(subset=[ts, "SpeedMps", "BearingDegrees"]).sort_values(ts)
+
+    t0 = m[ts].iloc[0]
+    t_imu = (m[ts] - t0).to_numpy(dtype=float) / 1e9
+    accel = m[["ax", "ay", "az"]].to_numpy(dtype=float)
+    gyro = m[["gx", "gy", "gz"]].to_numpy(dtype=float)
+    t_gps = (fix[ts] - t0).to_numpy(dtype=float) / 1e9
+    speed = fix["SpeedMps"].to_numpy(dtype=float)
+    course = np.radians(90.0 - fix["BearingDegrees"].to_numpy(dtype=float))  # compass bearing to math angle
+    return t_imu, accel, gyro, t_gps, speed, course
+
+
 def run(trip_dir):
     """Load one GSDC trip and recover its IMU mounting rotation."""
     trip_dir = Path(trip_dir)
-    t_imu, accel, gyro = load_imu(trip_dir)
-    t_gps, gps_speed, gps_course = load_gps(trip_dir)
+    logs = list(trip_dir.glob("*_GnssLog.txt"))
+    if logs:
+        t_imu, accel, gyro, t_gps, gps_speed, gps_course = parse_gnsslog(logs[0])
+    else:
+        t_imu, accel, gyro = load_imu(trip_dir)
+        t_gps, gps_speed, gps_course = load_gps(trip_dir)
 
     # GPS is much lower rate than IMU; hold/interpolate onto the IMU timeline
     gps_speed_i = np.interp(t_imu, t_gps, gps_speed)
