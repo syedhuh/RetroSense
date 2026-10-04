@@ -92,11 +92,16 @@ def _longitudinal_correlation(accel_imu, rotation, forward_gps, moving_mask):
     return np.corrcoef(forward_accel[moving_mask], forward_gps[moving_mask])[0, 1]
 
 
-def calibrate(t, accel_imu, gyro_imu, gps_speed, gps_course, stationary_threshold=0.3,
-            moving_threshold=1.0, gyro_still_threshold=0.05, flip_confidence=0.15):
+def calibrate(t, accel_imu, gyro_imu, gps_speed, gps_course, stationary_threshold=0.3, 
+            moving_threshold=1.0, gyro_still_threshold=0.05, flip_confidence=0.15, 
+            min_duration_s=5.0):
     """Recover the rotation R such that vehicle_vector = R.apply(imu_vector)."""
     # quasi-static: not moving by GPS, and not rotating either (gyro is mounting-
     # orientation-agnostic in magnitude, so it needs no calibration to use here)
+        # too little driving: leg 3 has nothing to check against, result untrustworthy
+    duration = (t[-1] - t[0]) + (t[1] - t[0])
+    if duration < min_duration_s - 1e-6:
+        raise ValueError(f"only {duration:.1f}s of data, need at least {min_duration_s}s")
     stationary = (gps_speed < stationary_threshold) & (np.linalg.norm(gyro_imu, axis=1) < gyro_still_threshold)
     moving = gps_speed > moving_threshold
     forward_gps = _smoothed_derivative(gps_speed, t)
