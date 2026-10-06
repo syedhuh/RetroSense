@@ -1,4 +1,5 @@
-"""Plot the GPS path of a GNSS Logger trip, colored by speed."""
+"""Plot the route from any GNSS Logger text log, colored by speed."""
+import re
 import sys
 from pathlib import Path
 import numpy as np
@@ -7,10 +8,16 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "results" / "paths"
 
 
 def read_fixes(path):
+    """Read valid ``Fix`` records from a standard GNSS Logger text file.
+
+    Phones can mix sparse raw-GPS records with denser FLP (fused-location)
+    records.  Selecting the provider with the most complete fixes gives a
+    usable route for either style of phone log.
+    """
     cols, rows = None, []
     with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
@@ -19,14 +26,21 @@ def read_fixes(path):
                 cols = line[2:].split(",")[1:]
             elif line.startswith("Fix,"):
                 rows.append(line.split(",")[1:])
+    if cols is None or not rows:
+        raise ValueError(f"No GNSS Logger Fix records found in {path}")
+
     df = pd.DataFrame(rows)
     df.columns = cols[:df.shape[1]]
-    if (df["Provider"] == "GPS").any():
-        df = df[df["Provider"] == "GPS"]
     for c in df.columns:
         if c != "Provider":
             df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df.dropna(subset=["LatitudeDegrees", "LongitudeDegrees", "SpeedMps"])
+    df = df.dropna(subset=["LatitudeDegrees", "LongitudeDegrees", "SpeedMps"])
+    if df.empty:
+        raise ValueError(f"No complete latitude, longitude, and speed fixes found in {path}")
+
+    provider_counts = df.groupby("Provider").size()
+    provider = provider_counts.idxmax()
+    return df[df["Provider"] == provider].copy()
 
 
 if __name__ == "__main__":
@@ -45,10 +59,11 @@ if __name__ == "__main__":
     ax.set_aspect("equal")
     ax.set_xlabel("east [km]")
     ax.set_ylabel("north [km]")
-    ax.set_title(f"{log.parent.name} / {log.stem}")
+    ax.set_title(log.stem)
     ax.legend()
     fig.colorbar(sc, label="speed [km/h]")
-    out = RESULTS_DIR / f"path_{log.parent.name}_{log.stem}.png"
-    RESULTS_DIR.mkdir(exist_ok=True)
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", log.stem).strip("_")
+    out = RESULTS_DIR / f"{safe_stem}_path.png"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=150, bbox_inches="tight")
-    print(f"wrote {out}")
+    print(f"wrote {out} ({len(df)} fixes from {df['Provider'].iloc[0]})")

@@ -109,9 +109,20 @@ def load_gps(trip_dir):
 
 
 def parse_gnsslog(path):
-    """Read a GNSS Logger *_GnssLog.txt. Column names come from the '# Type,col,...' header lines.
-    Returns (t_imu, accel, gyro, t_gps, speed, course), times in seconds, course in radians."""
-    cols, rows = {}, {"Fix": [], "Accel": [], "Gyro": []}
+    """Read a GNSS Logger *_GnssLog.txt from a public or personal phone log.
+
+    GNSS Logger can write either calibrated ``Accel``/``Gyro`` records or
+    ``UncalAccel``/``UncalGyro`` records.  Prefer calibrated records when a
+    phone provides them; otherwise use the uncalibrated stream and let the
+    later stationary-period bias removal handle its residual offset.
+
+    Returns (t_imu, accel, gyro, t_gps, speed, course), times in seconds,
+    course in radians.
+    """
+    cols, rows = {}, {
+        "Fix": [], "Accel": [], "Gyro": [],
+        "UncalAccel": [], "UncalGyro": [],
+    }
     with open(path, encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
@@ -130,16 +141,29 @@ def parse_gnsslog(path):
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         return df
 
-    acc, gyr, fix = table("Accel"), table("Gyro"), table("Fix")
+    accel_kind = "Accel" if rows["Accel"] else "UncalAccel"
+    gyro_kind = "Gyro" if rows["Gyro"] else "UncalGyro"
+    if not rows[accel_kind] or not rows[gyro_kind] or not rows["Fix"]:
+        raise ValueError("GNSS log needs Fix plus Accel/Gyro or UncalAccel/UncalGyro records")
+
+    acc, gyr, fix = table(accel_kind), table(gyro_kind), table("Fix")
     ts = "utcTimeMillis"
 
-    a = acc[[ts, "AccelXMps2", "AccelYMps2", "AccelZMps2"]].set_axis([ts, "ax", "ay", "az"], axis=1).sort_values(ts)
-    g = gyr[[ts, "GyroXRadPerSec", "GyroYRadPerSec", "GyroZRadPerSec"]].set_axis([ts, "gx", "gy", "gz"], axis=1).sort_values(ts)
+    accel_columns = [f"{accel_kind}XMps2", f"{accel_kind}YMps2", f"{accel_kind}ZMps2"]
+    gyro_columns = [f"{gyro_kind}XRadPerSec", f"{gyro_kind}YRadPerSec", f"{gyro_kind}ZRadPerSec"]
+    a = acc[[ts, *accel_columns]].set_axis([ts, "ax", "ay", "az"], axis=1).sort_values(ts)
+    g = gyr[[ts, *gyro_columns]].set_axis([ts, "gx", "gy", "gz"], axis=1).sort_values(ts)
     m = pd.merge_asof(a, g, on=ts, direction="nearest")
 
-    if (fix["Provider"] == "GPS").any():
-        fix = fix[fix["Provider"] == "GPS"]
-    fix = fix.dropna(subset=["UnixTimeMillis", "SpeedMps", "BearingDegrees"]).sort_values("UnixTimeMillis")
+    fix = fix.dropna(subset=["UnixTimeMillis", "SpeedMps", "BearingDegrees"])
+    # Some phones write a few sparse raw-GPS fixes plus many more usable FLP
+    # (Fused Location Provider) fixes.  Use the provider with the most valid
+    # records rather than discarding the denser stream merely because a GPS
+    # row exists.
+    provider_counts = fix.groupby("Provider").size()
+    if not provider_counts.empty:
+        fix = fix[fix["Provider"] == provider_counts.idxmax()]
+    fix = fix.sort_values("UnixTimeMillis")
 
     t0 = m[ts].iloc[0]
     t_imu = (m[ts] - t0).to_numpy(dtype=float) / 1000.0
@@ -151,17 +175,68 @@ def parse_gnsslog(path):
     return t_imu, accel, gyro, t_gps, speed, course
 
 
+def _confidence_description(correlation):
+    """Return a cautious, presentation-friendly description of correlation."""
+    if correlation >= 0.60:
+        return "strong"
+    if correlation >= 0.35:
+        return "moderate"
+    if correlation >= 0.15:
+        return "limited"
+    return "weak"
+
+
+def print_calibration_summary(log_name, result, duration_s, gps_speed):
+    """Print a readable console summary for a demo or review."""
+    correlation = result.longitudinal_correlation
+    confidence = _confidence_description(correlation)
+    max_speed_kmh = float(np.max(gps_speed)) * 3.6
+    # Android phone axes: +x = right edge, +y = top edge, +z = out through
+    # the screen. Describe the recovered pose as well as the raw Euler values.
+    phone_right, phone_top, _screen_normal = result.rotation.apply(np.eye(3))
+    top_heading_deg = float(np.degrees(np.arctan2(phone_top[1], phone_top[0])))
+    top_downward_deg = float(np.degrees(np.arctan2(
+        -phone_top[2], np.hypot(phone_top[0], phone_top[1])
+    )))
+    right_edge_up_deg = float(np.degrees(np.arcsin(np.clip(phone_right[2], -1.0, 1.0))))
+    heading_side = "left" if top_heading_deg >= 0 else "right"
+    tilt_direction = "downward" if top_downward_deg >= 0 else "upward"
+    edge_direction = "higher" if right_edge_up_deg >= 0 else "lower"
+
+    print("\n=== RetroSense phone calibration ===")
+    print(f"Log: {log_name}")
+    print(f"Recording analysed: {duration_s:.1f} s | peak GPS speed: {max_speed_kmh:.1f} km/h")
+    print("\nStatus: CALIBRATION COMPLETED")
+    print(f"Motion-alignment confidence: {correlation:.2f} ({confidence})")
+    print("  Higher is better. Values above 0.15 are sufficient for the sign-check safeguard.")
+    print("\nEstimated phone mounting:")
+    print(f"  Phone top points {abs(top_heading_deg):.1f} degrees {heading_side} of vehicle forward")
+    print(f"  Phone top tilts {abs(top_downward_deg):.1f} degrees {tilt_direction}")
+    print(f"  Phone right edge is {abs(right_edge_up_deg):.1f} degrees {edge_direction}")
+    print("\nTechnical calibration rotation (phone axes to vehicle axes):")
+    print(f"  Roll:  {result.roll_deg:7.2f} degrees")
+    print(f"  Pitch: {result.pitch_deg:7.2f} degrees")
+    print(f"  Yaw:   {result.yaw_deg:7.2f} degrees")
+    print(f"\nStationary sensor samples used: {result.n_stationary_samples:,}")
+    print()
+
+
 def run(trip_dir, log_name=None):
-    """Load one GSDC trip and recover its IMU mounting rotation."""
-    trip_dir = Path(trip_dir)
-    logs = sorted(trip_dir.glob("*_GnssLog.txt"))
-    if log_name:
-        logs = [p for p in logs if p.name == log_name]
-    if logs:
-        t_imu, accel, gyro, t_gps, gps_speed, gps_course = parse_gnsslog(logs[0])
+    """Load one trip directory or one GNSS Logger text file and calibrate it."""
+    source = Path(trip_dir)
+    if source.is_file():
+        t_imu, accel, gyro, t_gps, gps_speed, gps_course = parse_gnsslog(source)
+        trip_name = source.stem
     else:
-        t_imu, accel, gyro = load_imu(trip_dir)
-        t_gps, gps_speed, gps_course = load_gps(trip_dir)
+        logs = sorted(source.glob("*_GnssLog.txt"))
+        if log_name:
+            logs = [p for p in logs if p.name == log_name]
+        if logs:
+            t_imu, accel, gyro, t_gps, gps_speed, gps_course = parse_gnsslog(logs[0])
+        else:
+            t_imu, accel, gyro = load_imu(source)
+            t_gps, gps_speed, gps_course = load_gps(source)
+        trip_name = source.name
 
     # GPS is much lower rate than IMU; hold/interpolate onto the IMU timeline
     gps_speed_i = np.interp(t_imu, t_gps, gps_speed)
@@ -171,10 +246,12 @@ def run(trip_dir, log_name=None):
     # a real phone accelerometer picks up engine vibration at "rest" -- widen
     # gyro_still_threshold or pre-filter if the stationary leg errors out.
     result = calibrate(t_imu, accel, gyro, gps_speed_i, gps_course_i)
-    print(f"{trip_dir.name}: recovered mounting rotation "
-          f"roll={result.roll_deg:.2f} pitch={result.pitch_deg:.2f} yaw={result.yaw_deg:.2f} deg "
-        f"(stationary samples: {result.n_stationary_samples}, "
-        f"longitudinal-axis correlation: {result.longitudinal_correlation:.2f})")
+    print_calibration_summary(
+        trip_name,
+        result,
+        duration_s=float(t_imu[-1] - t_imu[0]),
+        gps_speed=gps_speed_i,
+    )
     return result
 
 

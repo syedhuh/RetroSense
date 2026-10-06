@@ -1,5 +1,8 @@
-"""Harsh braking / acceleration / cornering detector + simple trip score,
-using calibrate() to move phone accel into the vehicle frame (x fwd, y left)."""
+"""Harsh braking, acceleration, and cornering detector.
+
+The calibrated rotation moves phone acceleration into the vehicle frame:
+x = forward and y = left.
+"""
 import sys
 from pathlib import Path
 import numpy as np
@@ -40,18 +43,15 @@ def analyze(log_path):
         "harsh_corner": find_events((np.abs(a_lat) > CORNER) & moving, t, MIN_DUR_S),
     }
     km = float(np.sum(speed[:-1] * np.diff(t))) / 1000.0
-    n = sum(len(x) for x in ev.values())
-    score = max(0.0, 100.0 - 10.0 * n / max(km, 1.0))  # simple scale, tweak later
-    return res, ev, km, score, a_long, a_lat
+    return res, ev, km, a_long, a_lat
 
 
 if __name__ == "__main__":
     log = Path(sys.argv[1] if len(sys.argv) > 1 else
                Path(__file__).resolve().parent / "data/2020-05-14-US-MTV-2/Pixel4_GnssLog.txt")
-    res, ev, km, score, a_long, a_lat = analyze(log)
+    res, ev, km, a_long, a_lat = analyze(log)
     print(f"{log.name}: {km:.1f} km, calibration corr {res.longitudinal_correlation:.2f}")
     print(f"peak fwd accel {a_long.max():.2f}, peak braking {a_long.min():.2f}, "
           f"peak lateral {np.abs(a_lat).max():.2f} m/s^2")
     for name, e in ev.items():
         print(f"  {name}: {len(e)}")
-    print(f"trip score: {score:.0f} / 100")
