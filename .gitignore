@@ -1,2 +1,10 @@
-validation/data/ 
-__pycache__/ 
+validation/data/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+results/webapp_server.log

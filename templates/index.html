@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark">
+<title>RetroSense · Motion analysis</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='2') }}">
+</head>
+<body>
+<div class="workspace">
+  <aside class="sidebar">
+    <a href="#single" class="brand"><span class="brand-icon">r<span>⁄</span></span>RetroSense</a>
+    <p class="brand-caption">Vehicle motion, understood.</p>
+    <nav aria-label="Workspace">
+      <button data-mode="single" class="nav-item active"><span aria-hidden="true">◈</span>Analyse a drive</button>
+      <button data-mode="compare" class="nav-item"><span aria-hidden="true">⇄</span>Compare two drives</button>
+      <button data-mode="method" class="nav-item"><span aria-hidden="true">⊙</span>How it works</button>
+    </nav>
+    <div class="library">
+      <div class="library-heading"><h2>Recordings</h2><button id="refresh" class="text-button" title="Refresh recordings" aria-label="Refresh recordings">↻</button></div>
+      <form id="analyse-form"><label for="single-log">Saved recording</label><select id="single-log" required></select><button type="submit" class="primary">Analyse recording <span aria-hidden="true">↗</span></button></form>
+      <form id="compare-form" hidden><label for="first-log">Phone A</label><select id="first-log" required></select><label for="second-log">Phone B</label><select id="second-log" required></select><button type="submit" class="primary">Calibrate and compare <span aria-hidden="true">↗</span></button></form>
+      <p id="library-count" class="muted small" role="status">Reading log library…</p>
+    </div>
+    <div class="sidebar-bottom"><span class="local-dot"></span><strong>On this computer</strong><p>Local only. Phone logs remain in your project folder.</p></div>
+  </aside>
+  <main>
+    <header class="page-header"><div><p id="section-label" class="muted small">Drive workspace</p><h1 id="page-title">Analyse a drive</h1></div><span class="session-label">RetroSense / Motion lab</span></header>
+    <div id="feedback" role="status" aria-live="polite"></div><div id="content"></div>
+    <footer>A Self-Calibrating IMU Framework for Vehicle Safety Warnings <span>Recorded-drive analysis</span></footer>
+  </main>
+</div>
+<script src="{{ url_for('static', filename='app.js', v='2') }}"></script>
+</body>
+</html>
